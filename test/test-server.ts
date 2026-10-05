@@ -62,7 +62,12 @@ async function runTest() {
     };
 
     for (const tool of tools) {
-      if (tool.name.startsWith("cpanel_verify_") || tool.name.startsWith("cpanel_account_")) {
+      if (
+        tool.name.startsWith("cpanel_verify_") ||
+        tool.name.startsWith("cpanel_account_") ||
+        tool.name === "cpanel_connect" ||
+        tool.name === "cpanel_session_status"
+      ) {
         categories.Account.push(tool.name);
       } else if (tool.name.startsWith("cpanel_domains_")) {
         categories.Domain.push(tool.name);

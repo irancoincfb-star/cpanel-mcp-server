@@ -4,9 +4,8 @@
  * Handles authentication (username/password and API token) and
  * HTTP communication with the cPanel UAPI and legacy API2 endpoints.
  *
- * Endpoint URL structure:
- *   UAPI:  https://{host}:2083/execute/{Module}/{Function}
- *   API2:  https://{host}:2083/json-api/cpanel?cpanel_jsonapi_apiversion=2&cpanel_jsonapi_module={Module}&cpanel_jsonapi_func={Function}
+ * Supports dynamic configuration at runtime so agents can connect to any cPanel
+ * by supplying host, username, and password/token on the fly.
  */
 
 export interface CpanelConfig {
@@ -39,42 +38,82 @@ export class CpanelApiError extends Error {
 }
 
 export class CpanelClient {
-  private readonly baseUrl: string;
-  private readonly authHeader: string;
+  private config?: CpanelConfig;
+  private baseUrl?: string;
+  private authHeader?: string;
 
-  constructor(private readonly config: CpanelConfig) {
+  constructor(config?: CpanelConfig) {
+    if (config?.host && config?.username && (config?.password || config?.apiToken)) {
+      this.configure(config);
+    }
+  }
+
+  /**
+   * Configure or switch credentials dynamically at runtime.
+   */
+  configure(config: CpanelConfig): void {
+    if (!config.host || !config.username) {
+      throw new Error("Both host and username are required.");
+    }
+    if (!config.password && !config.apiToken) {
+      throw new Error(
+        "Either password or apiToken must be provided for cPanel authentication.",
+      );
+    }
+
     const port = config.port ?? 2083;
     this.baseUrl = `https://${config.host}:${port}`;
+    this.config = { ...config, port };
 
     if (config.apiToken) {
-      // API Token authentication — preferred for automation
       this.authHeader = `cpanel ${config.username}:${config.apiToken}`;
-    } else if (config.password) {
-      // Basic authentication
+    } else {
       const credentials = Buffer.from(
         `${config.username}:${config.password}`,
       ).toString("base64");
       this.authHeader = `Basic ${credentials}`;
-    } else {
-      throw new Error(
-        "Either password or apiToken must be provided for cPanel authentication.",
+    }
+  }
+
+  /**
+   * Check if the client currently has active credentials.
+   */
+  isConfigured(): boolean {
+    return Boolean(this.baseUrl && this.authHeader && this.config);
+  }
+
+  /**
+   * Get the current active configuration (safe details, no passwords).
+   */
+  getActiveSession(): { host?: string; username?: string; port?: number } | null {
+    if (!this.config) return null;
+    return {
+      host: this.config.host,
+      username: this.config.username,
+      port: this.config.port,
+    };
+  }
+
+  private assertConfigured(): void {
+    if (!this.isConfigured() || !this.baseUrl || !this.authHeader || !this.config) {
+      throw new CpanelApiError(
+        "cPanel is not connected yet. Please call 'cpanel_connect' tool first with your cPanel host, username, and password or API token.",
+        401,
+        ["Not connected"],
       );
     }
   }
 
   /**
    * Call a UAPI function.
-   *
-   * @example
-   *   await client.uapi("Email", "list_pops");
-   *   await client.uapi("SubDomain", "addsubdomain", { domain: "sub", rootdomain: "example.com" });
    */
   async uapi<T = unknown>(
     module: string,
     func: string,
     params?: Record<string, string | number | boolean>,
   ): Promise<CpanelResponse<T>> {
-    const url = new URL(`/execute/${module}/${func}`, this.baseUrl);
+    this.assertConfigured();
+    const url = new URL(`/execute/${module}/${func}`, this.baseUrl!);
 
     if (params) {
       for (const [key, value] of Object.entries(params)) {
@@ -88,21 +127,19 @@ export class CpanelClient {
   }
 
   /**
-   * Call a legacy API 2 function (for modules not yet migrated to UAPI, e.g. Cron).
-   *
-   * @example
-   *   await client.api2("Cron", "listcron");
+   * Call a legacy API 2 function (e.g. ZoneEdit, Cron).
    */
   async api2<T = unknown>(
     module: string,
     func: string,
     params?: Record<string, string | number | boolean>,
   ): Promise<T> {
-    const url = new URL("/json-api/cpanel", this.baseUrl);
+    this.assertConfigured();
+    const url = new URL("/json-api/cpanel", this.baseUrl!);
     url.searchParams.set("cpanel_jsonapi_apiversion", "2");
     url.searchParams.set("cpanel_jsonapi_module", module);
     url.searchParams.set("cpanel_jsonapi_func", func);
-    url.searchParams.set("cpanel_jsonapi_user", this.config.username);
+    url.searchParams.set("cpanel_jsonapi_user", this.config!.username);
 
     if (params) {
       for (const [key, value] of Object.entries(params)) {
@@ -129,6 +166,7 @@ export class CpanelClient {
    * Execute a raw HTTP request against the cPanel server.
    */
   private async request<T>(url: string): Promise<T> {
+    this.assertConfigured();
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 30_000);
 
@@ -136,15 +174,13 @@ export class CpanelClient {
       const fetchOptions: RequestInit = {
         method: "GET",
         headers: {
-          Authorization: this.authHeader,
+          Authorization: this.authHeader!,
           Accept: "application/json",
         },
         signal: controller.signal,
       };
 
-      // Allow self-signed certificates in development
-      if (this.config.insecure) {
-        // Node.js 18+ supports this via the agent option
+      if (this.config?.insecure) {
         // @ts-expect-error — Node-specific extension
         fetchOptions.dispatcher = new (await import("undici")).Agent({
           connect: { rejectUnauthorized: false },
@@ -176,12 +212,13 @@ export class CpanelClient {
   }
 
   /**
-   * Verify that the credentials work by calling a lightweight UAPI function.
+   * Verify that current credentials work by calling a lightweight UAPI function.
    */
   async verifyConnection(): Promise<{ ok: boolean; user: string; host: string }> {
+    this.assertConfigured();
     try {
       await this.uapi("DomainInfo", "list_domains");
-      return { ok: true, user: this.config.username, host: this.config.host };
+      return { ok: true, user: this.config!.username, host: this.config!.host };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       throw new CpanelApiError(

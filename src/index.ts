@@ -6,6 +6,7 @@
  * capabilities to any MCP-compatible AI agent or client.
  *
  * Modules:
+ *   - Connection: connect dynamically or via env vars, verify, session status
  *   - Domains: list, info, data
  *   - SubDomains: add, delete, change doc root
  *   - DNS: list/add/edit/delete zone records
@@ -15,21 +16,6 @@
  *   - Backup: list, create (homedir/FTP), restore
  *   - Cron: list/add/edit/delete jobs, email settings
  *   - FileManager: list/read/write/delete/mkdir/rename/copy/chmod, disk usage
- *
- * Authentication:
- *   - Username + Password (Basic Auth)
- *   - Username + API Token (recommended for automation)
- *
- * Configuration via environment variables:
- *   CPANEL_HOST     — cPanel server hostname (required)
- *   CPANEL_PORT     — cPanel port (default 2083)
- *   CPANEL_USERNAME — cPanel username (required)
- *   CPANEL_PASSWORD — cPanel password (optional if token is provided)
- *   CPANEL_API_TOKEN — cPanel API token (optional if password is provided)
- *   CPANEL_INSECURE — Set to "true" to allow self-signed certs
- *
- * Usage:
- *   CPANEL_HOST=example.com CPANEL_USERNAME=user CPANEL_PASSWORD=pass node dist/index.js
  */
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
@@ -46,62 +32,81 @@ import { registerCronTools } from "./tools/cron.js";
 import { registerFileManagerTools } from "./tools/filemanager.js";
 import { z } from "zod";
 
-// ── Read configuration from environment ─────────────────────────────
-const host = process.env.CPANEL_HOST;
-const port = process.env.CPANEL_PORT ? parseInt(process.env.CPANEL_PORT, 10) : 2083;
-const username = process.env.CPANEL_USERNAME;
-const password = process.env.CPANEL_PASSWORD;
-const apiToken = process.env.CPANEL_API_TOKEN;
-const insecure = process.env.CPANEL_INSECURE === "true";
+// ── Read optional initial configuration from environment ────────────
+const envHost = process.env.CPANEL_HOST;
+const envPort = process.env.CPANEL_PORT ? parseInt(process.env.CPANEL_PORT, 10) : 2083;
+const envUsername = process.env.CPANEL_USERNAME;
+const envPassword = process.env.CPANEL_PASSWORD;
+const envApiToken = process.env.CPANEL_API_TOKEN;
+const envInsecure = process.env.CPANEL_INSECURE === "true";
 
-if (!host || !username) {
-  console.error(
-    "Error: CPANEL_HOST and CPANEL_USERNAME environment variables are required.\n\n" +
-      "Usage:\n" +
-      "  CPANEL_HOST=example.com CPANEL_USERNAME=user CPANEL_PASSWORD=pass node dist/index.js\n" +
-      "  CPANEL_HOST=example.com CPANEL_USERNAME=user CPANEL_API_TOKEN=token node dist/index.js\n",
-  );
-  process.exit(1);
+// Initialize cPanel client
+const cpanelClient = new CpanelClient();
+
+if (envHost && envUsername && (envPassword || envApiToken)) {
+  cpanelClient.configure({
+    host: envHost,
+    port: envPort,
+    username: envUsername,
+    password: envPassword,
+    apiToken: envApiToken,
+    insecure: envInsecure,
+  });
+  console.error(`cPanel MCP: Initialized with default host ${envHost} for ${envUsername}`);
+} else {
+  console.error("cPanel MCP: Running in dynamic mode. Use 'cpanel_connect' to connect to any cPanel host.");
 }
-
-if (!password && !apiToken) {
-  console.error(
-    "Error: Either CPANEL_PASSWORD or CPANEL_API_TOKEN must be provided.\n",
-  );
-  process.exit(1);
-}
-
-// ── Initialize cPanel client ────────────────────────────────────────
-const cpanelClient = new CpanelClient({
-  host,
-  port,
-  username,
-  password,
-  apiToken,
-  insecure,
-});
 
 // ── Create MCP Server ───────────────────────────────────────────────
 const server = new McpServer({
   name: "cpanel-mcp-server",
-  version: "1.0.0",
+  version: "1.1.0",
   description:
     "Full cPanel management MCP server — DNS, Email, Domains, SubDomains, SSL, FTP, Backup, Cron, FileManager",
 });
 
-// ── Register connection verification tool ───────────────────────────
+// ── Dynamic Connection Tool ─────────────────────────────────────────
 server.tool(
-  "cpanel_verify_connection",
-  "Verify the cPanel connection is working. Call this first to confirm credentials are valid.",
-  {},
-  async () => {
+  "cpanel_connect",
+  "Connect to a cPanel server dynamically. Use this when connecting to a new cPanel or switching accounts. You can use Username+Password or Username+API Token.",
+  {
+    host: z.string().describe("cPanel hostname or domain (e.g. 'cpanel.example.com' or 'server.host.com')"),
+    username: z.string().describe("cPanel username"),
+    password: z.string().optional().describe("cPanel password (required if no apiToken)"),
+    apiToken: z.string().optional().describe("cPanel API token (required if no password)"),
+    port: z.number().optional().default(2083).describe("cPanel port (default 2083)"),
+    insecure: z.boolean().optional().default(false).describe("Allow self-signed SSL certs (default false)"),
+  },
+  async ({ host, username, password, apiToken, port, insecure }) => {
     try {
-      const result = await cpanelClient.verifyConnection();
+      if (!password && !apiToken) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text" as const,
+              text: "Either 'password' or 'apiToken' must be provided.",
+            },
+          ],
+        };
+      }
+
+      cpanelClient.configure({
+        host,
+        username,
+        password,
+        apiToken,
+        port: port ?? 2083,
+        insecure: insecure ?? false,
+      });
+
+      // Verify connection
+      const verification = await cpanelClient.verifyConnection();
       return {
         content: [
           {
             type: "text" as const,
-            text: `✅ Connection verified!\nHost: ${result.host}\nUser: ${result.user}`,
+            text: `✅ Successfully connected to cPanel server!\nHost: ${verification.host}\nUser: ${verification.user}\nPort: ${port ?? 2083}`,
           },
         ],
       };
@@ -111,11 +116,69 @@ server.tool(
         content: [
           {
             type: "text" as const,
-            text: `❌ Connection failed: ${e}`,
+            text: `❌ Connection failed: ${e instanceof Error ? e.message : String(e)}`,
           },
         ],
       };
     }
+  },
+);
+
+// ── Register connection verification tool ───────────────────────────
+server.tool(
+  "cpanel_verify_connection",
+  "Verify the current cPanel connection is active and working.",
+  {},
+  async () => {
+    try {
+      const result = await cpanelClient.verifyConnection();
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: `✅ Connection active and verified!\nHost: ${result.host}\nUser: ${result.user}`,
+          },
+        ],
+      };
+    } catch (e) {
+      return {
+        isError: true,
+        content: [
+          {
+            type: "text" as const,
+            text: `❌ Connection check failed: ${e instanceof Error ? e.message : String(e)}`,
+          },
+        ],
+      };
+    }
+  },
+);
+
+// ── Get Active Session ──────────────────────────────────────────────
+server.tool(
+  "cpanel_session_status",
+  "Check which cPanel host and user is currently connected in this session.",
+  {},
+  async () => {
+    const session = cpanelClient.getActiveSession();
+    if (!session) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text: "No active cPanel session. Call 'cpanel_connect' with host, username, and credentials.",
+          },
+        ],
+      };
+    }
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `Active cPanel session:\nHost: ${session.host}\nUser: ${session.username}\nPort: ${session.port}`,
+        },
+      ],
+    };
   },
 );
 
@@ -144,7 +207,7 @@ server.tool(
         content: [
           {
             type: "text" as const,
-            text: `Error getting account stats: ${e}`,
+            text: `Error getting account stats: ${e instanceof Error ? e.message : String(e)}`,
           },
         ],
       };
@@ -167,9 +230,7 @@ registerFileManagerTools(server, cpanelClient);
 async function main() {
   const transport = new StdioServerTransport();
   await server.connect(transport);
-  // Log to stderr (never stdout — stdout is reserved for JSON-RPC)
   console.error("cPanel MCP Server running on stdio");
-  console.error(`Connected to ${host} as ${username}`);
 }
 
 main().catch((error) => {
