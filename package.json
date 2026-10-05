@@ -1,0 +1,45 @@
+{
+  "name": "cpanel-mcp-server",
+  "version": "1.0.0",
+  "description": "MCP Server for full cPanel management — DNS, Email, Domain, SubDomain, Backup, SSL, FTP, Cron, FileManager",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "cpanel-mcp-server": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "test": "tsx test/test-server.ts",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "inspect": "npx @modelcontextprotocol/inspector node dist/index.js"
+  },
+  "keywords": [
+    "mcp",
+    "cpanel",
+    "model-context-protocol",
+    "hosting",
+    "dns",
+    "email",
+    "domain",
+    "backup",
+    "ssl",
+    "ftp",
+    "cron",
+    "filemanager"
+  ],
+  "author": "IBO",
+  "license": "MIT",
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.12.0",
+    "zod": "^3.24.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.7.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
