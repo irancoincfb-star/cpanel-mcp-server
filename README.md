@@ -44,7 +44,7 @@ npm install -g cpanel-mcp-server
 ### From source
 
 ```bash
-git clone https://github.com/YOUR_USER/cpanel-mcp-server.git
+git clone https://github.com/irancoincfb-star/cpanel-mcp-server.git
 cd cpanel-mcp-server
 npm install
 npm run build
